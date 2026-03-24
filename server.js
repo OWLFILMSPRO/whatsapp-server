@@ -19,17 +19,21 @@ app.use((req, res, next) => {
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--disable-extensions',
       '--no-first-run',
       '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
-    ]
+      '--deterministic-fetch',
+      '--disable-features=IsolateOrigins',
+      '--disable-site-isolation-trials'
+    ],
+    timeout: 60000
   }
 });
 
@@ -50,7 +54,11 @@ client.on('ready', () => {
 client.on('disconnected', (reason) => {
   isReady = false;
   console.log('❌ Desconectado:', reason);
-  client.initialize();
+  setTimeout(() => client.initialize(), 5000);
+});
+
+client.on('auth_failure', (msg) => {
+  console.error('Falha de autenticação:', msg);
 });
 
 client.on('message', async (msg) => {
