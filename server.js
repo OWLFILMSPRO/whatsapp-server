@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const { Client, LocalAuth } = require('whatsapp-web.js');
@@ -15,56 +14,187 @@ app.use((req, res, next) => {
   next();
 });
 
-// -- Auth token para proteger o servidor --
+// ── Auth token para proteger o servidor ──
 const API_TOKEN = process.env.WWEBJS_API_TOKEN || 'meu-token-secreto-123';
 const PORT = process.env.PORT || 3001;
 
+// ── Estado global ──
 let clientReady = false;
 let currentQR = null;
 let connectionInfo = null;
 
+// ── Cliente WhatsApp ──
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './wwebjs_auth' }),
   puppeteer: {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--disable-gpu'
+    ]
   }
 });
 
+// ── Eventos do cliente ──
 client.on('qr', async (qr) => {
-  console.log('📱 QR Code gerado!');
+  console.log('\n📱 QR Code gerado! Escaneie com seu WhatsApp:');
+  qrcodeTerminal.generate(qr, { small: true });
   currentQR = await qrcode.toDataURL(qr);
 });
 
-client.on('ready', () => {
+client.on('ready', async () => {
   clientReady = true;
   currentQR = null;
-  connectionInfo = { name: client.info.pushname, phone: client.info.wid.user };
-  console.log('✅ WhatsApp conectado!');
+  const info = client.info;
+  connectionInfo = {
+    name: info.pushname,
+    phone: info.wid.user,
+    platform: info.platform
+  };
+  console.log(`\n✅ WhatsApp conectado! (${info.pushname} - ${info.wid.user})`);
 });
 
+client.on('authenticated', () => {
+  console.log('🔐 Autenticado com sucesso!');
+});
+
+client.on('auth_failure', (msg) => {
+  console.error('❌ Falha na autenticação:', msg);
+  clientReady = false;
+});
+
+client.on('disconnected', (reason) => {
+  console.log('📴 Desconectado:', reason);
+  clientReady = false;
+  connectionInfo = null;
+});
+
+// ── Middleware de autenticação ──
 function authMiddleware(req, res, next) {
   const token = req.headers['x-api-token'] || req.query.token;
-  if (token !== API_TOKEN) return res.status(401).json({ error: 'Token inválido' });
+  if (token !== API_TOKEN) {
+    return res.status(401).json({ error: 'Token inválido' });
+  }
   next();
 }
 
+// ── Rotas ──
+
+// Status da conexão
 app.get('/status', authMiddleware, (req, res) => {
-  res.json({ connected: clientReady, qr: currentQR, info: connectionInfo });
+  res.json({
+    connected: clientReady,
+    qr: currentQR,
+    info: connectionInfo
+  });
 });
 
-app.post('/send', authMiddleware, async (req, res) => {
-  const { phone, message } = req.body;
+// Obter QR code como imagem
+app.get('/qr', authMiddleware, (req, res) => {
+  if (clientReady) return res.json({ connected: true, message: 'Já conectado!' });
+  if (!currentQR) return res.json({ connected: false, qr: null, message: 'Aguardando QR...' });
+  res.json({ connected: false, qr: currentQR });
+});
+
+// Listar grupos
+app.get('/groups', authMiddleware, async (req, res) => {
+  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
   try {
-    const chatId = phone.includes('@c.us') ? phone : `${phone}@c.us`;
-    await client.sendMessage(chatId, message);
+    const chats = await client.getChats();
+    const groups = chats
+      .filter(chat => chat.isGroup)
+      .map(g => ({
+        id: g.id._serialized,
+        name: g.name,
+        participants: g.participants?.length || 0
+      }));
+    res.json(groups);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Enviar mensagem para grupo
+app.post('/send-group', authMiddleware, async (req, res) => {
+  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
+  const { groupId, message } = req.body;
+  if (!groupId || !message) return res.status(400).json({ error: 'groupId e message são obrigatórios' });
+
+  try {
+    const chat = await client.getChatById(groupId);
+    const sent = await chat.sendMessage(message);
+    res.json({ success: true, messageId: sent.id._serialized, timestamp: sent.timestamp });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Enviar mensagem para número
+app.post('/send', authMiddleware, async (req, res) => {
+  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
+  const { phone, message } = req.body;
+  if (!phone || !message) return res.status(400).json({ error: 'phone e message são obrigatórios' });
+
+  try {
+    const cleanPhone = phone.replace(/[\s\-\+\(\)]/g, '');
+    
+    // Tenta obter o ID correto do WhatsApp para o número (resolve problemas de 9º dígito e formatação)
+    const numberId = await client.getNumberId(cleanPhone);
+    
+    if (!numberId) {
+      return res.status(404).json({ error: 'Número não encontrado no WhatsApp' });
+    }
+
+    const sent = await client.sendMessage(numberId._serialized, message);
+    res.json({ success: true, messageId: sent.id._serialized });
+  } catch (err) {
+    console.error('[send error]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Enviar mensagem em massa para múltiplos grupos
+app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
+  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
+  const { groupIds, message, delayMs = 2000 } = req.body;
+  if (!groupIds?.length || !message) return res.status(400).json({ error: 'groupIds e message são obrigatórios' });
+
+  const results = [];
+  for (const gid of groupIds) {
+    try {
+      const chat = await client.getChatById(gid);
+      await chat.sendMessage(message);
+      results.push({ groupId: gid, success: true });
+    } catch (err) {
+      results.push({ groupId: gid, success: false, error: err.message });
+    }
+    // Delay entre envios para não ser bloqueado
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  res.json({ results });
+});
+
+// Desconectar
+app.post('/logout', authMiddleware, async (req, res) => {
+  try {
+    await client.logout();
+    clientReady = false;
+    connectionInfo = null;
+    currentQR = null;
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server rodando na porta ${PORT}`);
+// ── Iniciar ──
+app.listen(PORT, () => {
+  console.log(`\n🚀 WhatsApp Server rodando na porta ${PORT}`);
+  console.log(`🔑 Token: ${API_TOKEN}`);
+  console.log('⏳ Iniciando cliente WhatsApp...\n');
   client.initialize();
 });
