@@ -1,17 +1,9 @@
-FROM node:18-alpine
+FROM ghcr.io/puppeteer/puppeteer:21.6.1
 
-# Instala o Chromium e dependências necessárias para o Puppeteer
-RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont
-
-# Define variável para o Puppeteer usar o Chromium instalado
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+
+USER root
 
 WORKDIR /app
 
