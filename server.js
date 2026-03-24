@@ -34,7 +34,10 @@ const client = new Client({
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
-      '--disable-gpu'
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu',
+      '--js-flags="--max-old-space-size=512"' // Limita o heap do V8
     ]
   }
 });
@@ -56,6 +59,25 @@ client.on('ready', async () => {
     platform: info.platform
   };
   console.log(`\n✅ WhatsApp conectado! (${info.pushname} - ${info.wid.user})`);
+
+  // Otimização de memória: Bloqueia recursos pesados (Imagens, CSS, Fonts)
+  const page = client.pupPage;
+  if (page) {
+    try {
+      await page.setRequestInterception(true);
+      page.on('request', (request) => {
+        const resourceType = request.resourceType();
+        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+          request.abort();
+        } else {
+          request.continue();
+        }
+      });
+      console.log('📉 Otimização de recursos ativada (bloqueando imagens/estilos)');
+    } catch (err) {
+      console.error('⚠️ Erro ao configurar interceptação de recursos:', err);
+    }
+  }
 });
 
 client.on('authenticated', () => {
