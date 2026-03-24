@@ -34,10 +34,8 @@ const client = new Client({
       '--disable-dev-shm-usage',
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
-      '--no-zygote',
-      '--single-process',
       '--disable-gpu',
-      '--js-flags="--max-old-space-size=512"' // Limita o heap do V8
+      '--js-flags="--max-old-space-size=512"'
     ]
   }
 });
@@ -152,7 +150,10 @@ app.post('/send', authMiddleware, async (req, res) => {
   try {
     const cleanPhone = phone.replace(/[\s\-\+\(\)]/g, '');
     
-    // Tenta obter o ID correto do WhatsApp para o número (resolve problemas de 9º dígito e formatação)
+    // Pequeno delay para garantir estabilidade do frame
+    await new Promise(r => setTimeout(r, 500));
+
+    // Tenta obter o ID correto do WhatsApp para o número
     const numberId = await client.getNumberId(cleanPhone);
     
     if (!numberId) {
