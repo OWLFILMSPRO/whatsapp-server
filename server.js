@@ -1,94 +1,70 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+// server.js
 const express = require('express');
 const cors = require('cors');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Middleware de autenticação
+// Log de requisições para debug
 app.use((req, res, next) => {
-  const token = req.headers['x-api-token'];
-  if (!token || token !== process.env.API_TOKEN) {
-    return res.status(401).json({ error: 'Não autorizado' });
-  }
+  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
   next();
 });
 
+// -- Auth token para proteger o servidor --
+const API_TOKEN = process.env.WWEBJS_API_TOKEN || 'meu-token-secreto-123';
+const PORT = process.env.PORT || 3001;
+
+let clientReady = false;
+let currentQR = null;
+let connectionInfo = null;
+
 const client = new Client({
-  authStrategy: new LocalAuth(),
+  authStrategy: new LocalAuth({ dataPath: './wwebjs_auth' }),
   puppeteer: {
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-software-rasterizer',
-      '--disable-extensions',
-      '--no-first-run',
-      '--no-zygote',
-      '--deterministic-fetch',
-      '--disable-features=IsolateOrigins',
-      '--disable-site-isolation-trials'
-    ],
-    timeout: 60000
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
   }
 });
 
-let qrCodeData = null;
-let isReady = false;
-
 client.on('qr', async (qr) => {
-  qrCodeData = await qrcode.toDataURL(qr);
-  console.log('QR Code gerado!');
+  console.log('📱 QR Code gerado!');
+  currentQR = await qrcode.toDataURL(qr);
 });
 
 client.on('ready', () => {
-  isReady = true;
-  qrCodeData = null;
+  clientReady = true;
+  currentQR = null;
+  connectionInfo = { name: client.info.pushname, phone: client.info.wid.user };
   console.log('✅ WhatsApp conectado!');
 });
 
-client.on('disconnected', (reason) => {
-  isReady = false;
-  console.log('❌ Desconectado:', reason);
-  setTimeout(() => client.initialize(), 5000);
+function authMiddleware(req, res, next) {
+  const token = req.headers['x-api-token'] || req.query.token;
+  if (token !== API_TOKEN) return res.status(401).json({ error: 'Token inválido' });
+  next();
+}
+
+app.get('/status', authMiddleware, (req, res) => {
+  res.json({ connected: clientReady, qr: currentQR, info: connectionInfo });
 });
 
-client.on('auth_failure', (msg) => {
-  console.error('Falha de autenticação:', msg);
-});
-
-client.on('message', async (msg) => {
-  console.log(`Mensagem de ${msg.from}: ${msg.body}`);
-});
-
-app.get('/status', (req, res) => {
-  res.json({ ready: isReady });
-});
-
-app.get('/qr', (req, res) => {
-  if (isReady) return res.json({ ready: true });
-  if (!qrCodeData) return res.json({ ready: false, qr: null, message: 'Aguardando QR...' });
-  res.json({ ready: false, qr: qrCodeData });
-});
-
-app.post('/send', async (req, res) => {
-  const { number, message } = req.body;
-  if (!isReady) return res.status(503).json({ error: 'WhatsApp não está conectado' });
-  if (!number || !message) return res.status(400).json({ error: 'number e message são obrigatórios' });
+app.post('/send', authMiddleware, async (req, res) => {
+  const { phone, message } = req.body;
   try {
-    const chatId = number.includes('@c.us') ? number : `${number}@c.us`;
+    const chatId = phone.includes('@c.us') ? phone : `${phone}@c.us`;
     await client.sendMessage(chatId, message);
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-client.initialize();
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server rodando na porta ${PORT}`);
+  client.initialize();
+});
