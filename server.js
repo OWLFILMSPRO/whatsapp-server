@@ -125,8 +125,12 @@ app.get('/qr', authMiddleware, (req, res) => {
 // Listar grupos
 app.get('/groups', authMiddleware, async (req, res) => {
   if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
+  console.log('[groups] Iniciando busca de chats...');
+  const start = Date.now();
   try {
     const chats = await client.getChats();
+    console.log(`[groups] ${chats.length} chats encontrados em ${Date.now() - start}ms`);
+    
     const groups = chats
       .filter(chat => chat.isGroup)
       .map(g => ({
@@ -134,8 +138,11 @@ app.get('/groups', authMiddleware, async (req, res) => {
         name: g.name,
         participants: g.participants?.length || 0
       }));
+    
+    console.log(`[groups] ${groups.length} grupos filtrados`);
     res.json(groups);
   } catch (err) {
+    console.error('[groups error]', err);
     res.status(500).json({ error: err.message });
   }
 });
