@@ -28,6 +28,7 @@ const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './wwebjs_auth' }),
   puppeteer: {
     headless: true,
+    protocolTimeout: 60000, // Aumenta para 60 segundos o timeout interno do Puppeteer
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -153,14 +154,19 @@ app.post('/send', authMiddleware, async (req, res) => {
     // Pequeno delay para garantir estabilidade do frame
     await new Promise(r => setTimeout(r, 500));
 
-    // Tenta obter o ID correto do WhatsApp para o número
-    const numberId = await client.getNumberId(cleanPhone);
-    
-    if (!numberId) {
-      return res.status(404).json({ error: 'Número não encontrado no WhatsApp' });
+    // Tenta obter o ID correto do WhatsApp com um timeout de 15s
+    let numberId = null;
+    try {
+      numberId = await Promise.race([
+        client.getNumberId(cleanPhone),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
+      ]);
+    } catch (err) {
+      console.warn('[getNumberId fallback]', err.message);
     }
 
-    const sent = await client.sendMessage(numberId._serialized, message);
+    const chatId = numberId ? numberId._serialized : (cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`);
+    const sent = await client.sendMessage(chatId, message);
     res.json({ success: true, messageId: sent.id._serialized });
   } catch (err) {
     console.error('[send error]', err);
