@@ -19,7 +19,7 @@ app.use((req, res, next) => {
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: {
-    executablePath: '/usr/bin/chromium',
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -57,30 +57,20 @@ client.on('message', async (msg) => {
   console.log(`Mensagem de ${msg.from}: ${msg.body}`);
 });
 
-// Status
 app.get('/status', (req, res) => {
   res.json({ ready: isReady });
 });
 
-// QR Code
 app.get('/qr', (req, res) => {
   if (isReady) return res.json({ ready: true });
   if (!qrCodeData) return res.json({ ready: false, qr: null, message: 'Aguardando QR...' });
   res.json({ ready: false, qr: qrCodeData });
 });
 
-// Enviar mensagem
 app.post('/send', async (req, res) => {
   const { number, message } = req.body;
-
-  if (!isReady) {
-    return res.status(503).json({ error: 'WhatsApp não está conectado' });
-  }
-
-  if (!number || !message) {
-    return res.status(400).json({ error: 'number e message são obrigatórios' });
-  }
-
+  if (!isReady) return res.status(503).json({ error: 'WhatsApp não está conectado' });
+  if (!number || !message) return res.status(400).json({ error: 'number e message são obrigatórios' });
   try {
     const chatId = number.includes('@c.us') ? number : `${number}@c.us`;
     await client.sendMessage(chatId, message);
