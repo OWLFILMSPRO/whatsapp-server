@@ -1,218 +1,171 @@
 const express = require('express');
 const cors = require('cors');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason, 
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore,
+    Browsers
+} = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Log de requisições para debug
-app.use((req, res, next) => {
-  console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);
-  next();
-});
-
-// ── Auth token para proteger o servidor ──
+// ── Configurações ──
 const API_TOKEN = process.env.WWEBJS_API_TOKEN || 'meu-token-secreto-123';
 const PORT = process.env.PORT || 3001;
+const AUTH_PATH = path.join(__dirname, 'baileys_auth');
 
-// ── Estado global ──
+// ── Estado Global ──
+let sock = null;
 let clientReady = false;
 let currentQR = null;
 let connectionInfo = null;
 
-// ── Cliente WhatsApp ──
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: './wwebjs_auth' }),
-  puppeteer: {
-    headless: true,
-    protocolTimeout: 90000, // 90 segundos para lidar com lentidão extrema da Railway
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--js-flags="--max-old-space-size=384"' // Reduz ainda mais para sobrar RAM pro resto do sistema
-    ]
-  }
-});
+// Logger silencioso para economizar processamento
+const logger = pino({ level: 'silent' });
 
-// ── Eventos do cliente ──
-client.on('qr', async (qr) => {
-  console.log('\n📱 QR Code gerado! Escaneie com seu WhatsApp:');
-  qrcodeTerminal.generate(qr, { small: true });
-  currentQR = await qrcode.toDataURL(qr);
-});
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
+    const { version } = await fetchLatestBaileysVersion();
 
-client.on('ready', async () => {
-  clientReady = true;
-  currentQR = null;
-  const info = client.info;
-  connectionInfo = {
-    name: info.pushname,
-    phone: info.wid.user,
-    platform: info.platform
-  };
-  console.log(`\n✅ WhatsApp conectado! (${info.pushname} - ${info.wid.user})`);
-});
+    sock = makeWASocket({
+        version,
+        printQRInTerminal: true,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger),
+        },
+        logger,
+        browser: Browsers.ubuntu('Chrome'), 
+        syncFullHistory: false, 
+        markOnlineOnConnect: true,
+    });
 
-client.on('authenticated', () => {
-  console.log('🔐 Autenticado com sucesso!');
-});
+    sock.ev.on('creds.update', saveCreds);
 
-client.on('auth_failure', (msg) => {
-  console.error('❌ Falha na autenticação:', msg);
-  clientReady = false;
-});
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
 
-client.on('disconnected', (reason) => {
-  console.log('📴 Desconectado:', reason);
-  clientReady = false;
-  connectionInfo = null;
-});
+        if (qr) {
+            currentQR = await qrcode.toDataURL(qr);
+            qrcodeTerminal.generate(qr, { small: true });
+        }
+
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log('📴 Conexão fechada. Motivo:', lastDisconnect?.error || 'Desconhecido');
+            clientReady = false;
+            connectionInfo = null;
+            if (shouldReconnect) {
+                console.log('🔄 Reconectando...');
+                connectToWhatsApp();
+            }
+        } else if (connection === 'open') {
+            clientReady = true;
+            currentQR = null;
+            const user = sock.user;
+            connectionInfo = {
+                name: user.name || 'WhatsApp Business',
+                phone: user.id.split(':')[0],
+                platform: 'Baileys'
+            };
+            console.log(`\n✅ WhatsApp conectado via Baileys! (${connectionInfo.phone})`);
+        }
+    });
+}
 
 // ── Middleware de autenticação ──
 function authMiddleware(req, res, next) {
-  const token = req.headers['x-api-token'] || req.query.token;
-  if (token !== API_TOKEN) {
-    return res.status(401).json({ error: 'Token inválido' });
-  }
-  next();
+    const token = req.headers['x-api-token'] || req.query.token;
+    if (token !== API_TOKEN) {
+        return res.status(401).json({ error: 'Token inválido' });
+    }
+    next();
 }
 
 // ── Rotas ──
 
-// Status da conexão
 app.get('/status', authMiddleware, (req, res) => {
-  res.json({
-    connected: clientReady,
-    qr: currentQR,
-    info: connectionInfo
-  });
+    res.json({
+        connected: clientReady,
+        qr: currentQR,
+        info: connectionInfo
+    });
 });
 
-// Obter QR code como imagem
-app.get('/qr', authMiddleware, (req, res) => {
-  if (clientReady) return res.json({ connected: true, message: 'Já conectado!' });
-  if (!currentQR) return res.json({ connected: false, qr: null, message: 'Aguardando QR...' });
-  res.json({ connected: false, qr: currentQR });
-});
-
-// Listar grupos
 app.get('/groups', authMiddleware, async (req, res) => {
-  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
-  console.log('[groups] Iniciando busca de chats...');
-  const start = Date.now();
-  try {
-    const chats = await client.getChats();
-    console.log(`[groups] ${chats.length} chats encontrados em ${Date.now() - start}ms`);
-    
-    const groups = chats
-      .filter(chat => chat.isGroup)
-      .map(g => ({
-        id: g.id._serialized,
-        name: g.name,
-        participants: g.participants?.length || 0
-      }));
-    
-    console.log(`[groups] ${groups.length} grupos filtrados`);
-    res.json(groups);
-  } catch (err) {
-    console.error('[groups error]', err);
-    res.status(500).json({ error: err.message });
-  }
+    if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
+    try {
+        const groups = await sock.groupFetchAllParticipating();
+        const list = Object.values(groups).map(g => ({
+            id: g.id,
+            name: g.subject,
+            participants: g.participants?.length || 0
+        }));
+        res.json(list);
+    } catch (err) {
+        res.status(500).json({ error: 'Falha ao buscar grupos' });
+    }
 });
 
-// Enviar mensagem para grupo
-app.post('/send-group', authMiddleware, async (req, res) => {
-  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
-  const { groupId, message } = req.body;
-  if (!groupId || !message) return res.status(400).json({ error: 'groupId e message são obrigatórios' });
-
-  try {
-    const chat = await client.getChatById(groupId);
-    const sent = await chat.sendMessage(message);
-    res.json({ success: true, messageId: sent.id._serialized, timestamp: sent.timestamp });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Enviar mensagem para número
 app.post('/send', authMiddleware, async (req, res) => {
-  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
-  const { phone, message } = req.body;
-  if (!phone || !message) return res.status(400).json({ error: 'phone e message são obrigatórios' });
-
-  try {
-    const cleanPhone = phone.replace(/[\s\-\+\(\)]/g, '');
-    
-    // Pequeno delay para garantir estabilidade do frame
-    await new Promise(r => setTimeout(r, 500));
-
-    // Tenta obter o ID correto do WhatsApp com um timeout de 15s
-    let numberId = null;
+    if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
+    const { phone, message } = req.body;
     try {
-      numberId = await Promise.race([
-        client.getNumberId(cleanPhone),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))
-      ]);
+        let cleanPhone = phone.replace(/[\s\-\+\(\)]/g, '');
+        if (!cleanPhone.includes('@')) {
+            cleanPhone = `${cleanPhone}@s.whatsapp.net`;
+        }
+        const sent = await sock.sendMessage(cleanPhone, { text: message });
+        res.json({ success: true, messageId: sent.key.id });
     } catch (err) {
-      console.warn('[getNumberId fallback]', err.message);
+        res.status(500).json({ error: err.message });
     }
-
-    const chatId = numberId ? numberId._serialized : (cleanPhone.includes('@c.us') ? cleanPhone : `${cleanPhone}@c.us`);
-    const sent = await client.sendMessage(chatId, message);
-    res.json({ success: true, messageId: sent.id._serialized });
-  } catch (err) {
-    console.error('[send error]', err);
-    res.status(500).json({ error: err.message });
-  }
 });
 
-// Enviar mensagem em massa para múltiplos grupos
 app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
-  if (!clientReady) return res.status(503).json({ error: 'WhatsApp não conectado' });
-  const { groupIds, message, delayMs = 2000 } = req.body;
-  if (!groupIds?.length || !message) return res.status(400).json({ error: 'groupIds e message são obrigatórios' });
-
-  const results = [];
-  for (const gid of groupIds) {
-    try {
-      const chat = await client.getChatById(gid);
-      await chat.sendMessage(message);
-      results.push({ groupId: gid, success: true });
-    } catch (err) {
-      results.push({ groupId: gid, success: false, error: err.message });
+    if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
+    const { groupIds, message } = req.body;
+    const results = [];
+    for (const id of groupIds) {
+        try {
+            await sock.sendMessage(id, { text: message });
+            results.push({ id, success: true });
+            await new Promise(r => setTimeout(r, 1000));
+        } catch (err) {
+            results.push({ id, success: false, error: err.message });
+        }
     }
-    // Delay entre envios para não ser bloqueado
-    await new Promise(r => setTimeout(r, delayMs));
-  }
-  res.json({ results });
+    res.json({ success: true, results });
 });
 
-// Desconectar
 app.post('/logout', authMiddleware, async (req, res) => {
-  try {
-    await client.logout();
-    clientReady = false;
-    connectionInfo = null;
-    currentQR = null;
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    try {
+        if (sock) {
+            await sock.logout();
+            if (fs.existsSync(AUTH_PATH)) {
+                fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+            }
+        }
+        clientReady = false;
+        connectionInfo = null;
+        currentQR = null;
+        res.json({ success: true });
+        setTimeout(() => connectToWhatsApp(), 2000);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// ── Iniciar ──
 app.listen(PORT, () => {
-  console.log(`\n🚀 WhatsApp Server rodando na porta ${PORT}`);
-  console.log(`🔑 Token: ${API_TOKEN}`);
-  console.log('⏳ Iniciando cliente WhatsApp...\n');
-  client.initialize();
+    console.log(`🚀 Servidor Baileys rodando na porta ${PORT}`);
+    connectToWhatsApp();
 });
