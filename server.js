@@ -28,7 +28,7 @@ const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './wwebjs_auth' }),
   puppeteer: {
     headless: true,
-    protocolTimeout: 60000, // Aumenta para 60 segundos o timeout interno do Puppeteer
+    protocolTimeout: 90000, // 90 segundos para lidar com lentidão extrema da Railway
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -36,7 +36,8 @@ const client = new Client({
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--disable-gpu',
-      '--js-flags="--max-old-space-size=512"'
+      '--disable-extensions',
+      '--js-flags="--max-old-space-size=384"' // Reduz ainda mais para sobrar RAM pro resto do sistema
     ]
   }
 });
