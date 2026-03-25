@@ -1,3 +1,4 @@
+console.log('🚀 --- INICIANDO SERVIDOR WHATSAPP ---');
 const express = require('express');
 const cors = require('cors');
 const { 
@@ -9,6 +10,7 @@ const {
     Browsers,
     makeInMemoryStore
 } = require('@whiskeysockets/baileys');
+
 const pino = require('pino');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -34,19 +36,33 @@ let connectionInfo = null;
 // Logger silencioso para economizar processamento
 const logger = pino({ level: 'silent' });
 
+// Prevê erros fatais no processo e evita que o servidor caia sem aviso (502)
+process.on('uncaughtException', (err) => console.error('[Fatal Error]', err));
+process.on('unhandledRejection', (err) => console.error('[Unhandled Rejection]', err));
+
 // Store para contatos e conversas
-const store = makeInMemoryStore({ logger });
+let store = null;
 try {
-    store.readFromFile(STORE_PATH);
-} catch (e) {}
-// Salva o store a cada 10s
-setInterval(() => {
-    try {
-        store.writeToFile(STORE_PATH);
-    } catch (e) {}
-}, 10000);
+    if (typeof makeInMemoryStore === 'function') {
+        store = makeInMemoryStore({ logger });
+        try {
+            store.readFromFile(STORE_PATH);
+        } catch (e) {
+            console.log('[Store] Arquivo novo ou corrompido, iniciando vazio.');
+        }
+        // Salva o store a cada 10s
+        setInterval(() => {
+            try {
+                store.writeToFile(STORE_PATH);
+            } catch (e) {}
+        }, 10000);
+    }
+} catch (err) {
+    console.error('[Store Error] Falha ao iniciar store, busca de contatos desativada:', err);
+}
 
 async function connectToWhatsApp() {
+    console.log('🔄 Iniciando conexão com WhatsApp via Baileys...');
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
     const { version } = await fetchLatestBaileysVersion();
 
@@ -63,8 +79,8 @@ async function connectToWhatsApp() {
         markOnlineOnConnect: true,
     });
 
-    // Vincula o store ao socket
-    store.bind(sock.ev);
+    // Vincula o store ao socket se ele existir
+    if (store) store.bind(sock.ev);
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -142,7 +158,8 @@ app.get('/groups', authMiddleware, async (req, res) => {
 // Buscar contatos/conversas
 app.get('/contacts', authMiddleware, async (req, res) => {
     if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
-    
+    if (!store) return res.json([]); // Se o store falhou, retorna vazio mas não quebra
+
     try {
         const query = (req.query.q || '').toLowerCase();
         
@@ -150,9 +167,9 @@ app.get('/contacts', authMiddleware, async (req, res) => {
         const contacts = Object.values(store.contacts).map(c => ({
             id: c.id,
             name: c.name || c.verifiedName || c.notify || '',
-            phone: c.id.split('@')[0]
+            phone: c.id?.split('@')[0] || ''
         })).filter(c => {
-            if (!c.id.endsWith('@s.whatsapp.net')) return false; // Apenas contatos individuais
+            if (!c.id || !c.id.endsWith('@s.whatsapp.net')) return false; // Apenas contatos individuais
             if (!query) return true;
             return c.name.toLowerCase().includes(query) || c.phone.includes(query);
         });
