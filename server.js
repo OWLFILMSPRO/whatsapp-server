@@ -116,17 +116,33 @@ app.get('/groups', authMiddleware, async (req, res) => {
     }
 });
 
+// Enviar mensagem simples (Versão corrigida com busca de ID real)
 app.post('/send', authMiddleware, async (req, res) => {
     if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
     const { phone, message } = req.body;
+    
     try {
         let cleanPhone = phone.replace(/[\s\-\+\(\)]/g, '');
+        
+        // Se não tiver o sufixo, vamos procurar o JID real no WhatsApp
         if (!cleanPhone.includes('@')) {
-            cleanPhone = `${cleanPhone}@s.whatsapp.net`;
+            // Tenta encontrar o número (Baileys cuida do 9 e resolve o JID correto)
+            const results = await sock.onWhatsApp(cleanPhone);
+            
+            if (results && results.length > 0 && results[0].exists) {
+                cleanPhone = results[0].jid;
+                console.log(`[send] ID real encontrado: ${cleanPhone}`);
+            } else {
+                // Fallback caso não encontre (tenta o formato padrão)
+                cleanPhone = `${cleanPhone}@s.whatsapp.net`;
+                console.log(`[send] Número não pré-validado, tentando padrão: ${cleanPhone}`);
+            }
         }
+
         const sent = await sock.sendMessage(cleanPhone, { text: message });
         res.json({ success: true, messageId: sent.key.id });
     } catch (err) {
+        console.error('[send error]', err);
         res.status(500).json({ error: err.message });
     }
 });
