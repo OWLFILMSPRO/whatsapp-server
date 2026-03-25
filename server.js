@@ -182,7 +182,15 @@ app.post('/send', authMiddleware, async (req, res) => {
         }
 
         const realJid = await getVerifiedJid(cleanPhone);
-        const sent = await sock.sendMessage(realJid, { text: message }, { linkPreview: true });
+        
+        // Se for link de entrega, envia como imagem + legenda para garantir a miniatura (preview)
+        const isDelivery = message.includes('delivery.owlfilms.pro');
+        const msgOptions = isDelivery ? {
+            image: { url: 'https://storage.googleapis.com/gpt-engineer-file-uploads/Djzpx4CivJSbk3MgCxPnLa8M8FE2/social-images/social-1773443024327-owl_web.webp' },
+            caption: message
+        } : { text: message };
+
+        const sent = await sock.sendMessage(realJid, msgOptions);
         res.json({ success: true, messageId: sent.key.id, verifiedJid: realJid });
     } catch (err) {
         console.error('[send error]', err);
@@ -199,7 +207,14 @@ app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
     for (const id of groupIds) {
         try {
             const realJid = await getVerifiedJid(id);
-            await sock.sendMessage(realJid, { text: message }, { linkPreview: true });
+            
+            const isDelivery = message.includes('delivery.owlfilms.pro');
+            const msgOptions = isDelivery ? {
+                image: { url: 'https://storage.googleapis.com/gpt-engineer-file-uploads/Djzpx4CivJSbk3MgCxPnLa8M8FE2/social-images/social-1773443024327-owl_web.webp' },
+                caption: message
+            } : { text: message };
+
+            await sock.sendMessage(realJid, msgOptions);
             results.push({ id, verifiedJid: realJid, success: true });
             // Pequeno delay entre envios para evitar spam
             await new Promise(r => setTimeout(r, 1000));
