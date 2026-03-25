@@ -1,4 +1,3 @@
-console.log('🚀 --- INICIANDO SERVIDOR WHATSAPP ---');
 const express = require('express');
 const cors = require('cors');
 const { 
@@ -7,8 +6,7 @@ const {
     DisconnectReason, 
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore,
-    Browsers,
-    makeInMemoryStore
+    Browsers
 } = require('@whiskeysockets/baileys');
 
 const pino = require('pino');
@@ -25,7 +23,6 @@ app.use(express.json());
 const API_TOKEN = process.env.WWEBJS_API_TOKEN || 'meu-token-secreto-123';
 const PORT = process.env.PORT || 3001;
 const AUTH_PATH = path.join(__dirname, 'baileys_auth');
-const STORE_PATH = path.join(__dirname, 'baileys_store.json');
 
 // ── Estado Global ──
 let sock = null;
@@ -36,33 +33,7 @@ let connectionInfo = null;
 // Logger silencioso para economizar processamento
 const logger = pino({ level: 'silent' });
 
-// Prevê erros fatais no processo e evita que o servidor caia sem aviso (502)
-process.on('uncaughtException', (err) => console.error('[Fatal Error]', err));
-process.on('unhandledRejection', (err) => console.error('[Unhandled Rejection]', err));
-
-// Store para contatos e conversas
-let store = null;
-try {
-    if (typeof makeInMemoryStore === 'function') {
-        store = makeInMemoryStore({ logger });
-        try {
-            store.readFromFile(STORE_PATH);
-        } catch (e) {
-            console.log('[Store] Arquivo novo ou corrompido, iniciando vazio.');
-        }
-        // Salva o store a cada 10s
-        setInterval(() => {
-            try {
-                store.writeToFile(STORE_PATH);
-            } catch (e) {}
-        }, 10000);
-    }
-} catch (err) {
-    console.error('[Store Error] Falha ao iniciar store, busca de contatos desativada:', err);
-}
-
 async function connectToWhatsApp() {
-    console.log('🔄 Iniciando conexão com WhatsApp via Baileys...');
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
     const { version } = await fetchLatestBaileysVersion();
 
@@ -78,9 +49,6 @@ async function connectToWhatsApp() {
         syncFullHistory: false, 
         markOnlineOnConnect: true,
     });
-
-    // Vincula o store ao socket se ele existir
-    if (store) store.bind(sock.ev);
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -184,6 +152,24 @@ app.get('/contacts', authMiddleware, async (req, res) => {
     }
 });
 
+// Helper para encontrar o JID correto (com ou sem o 9º dígito)
+async function getVerifiedJid(id) {
+    if (!id || !id.endsWith('@s.whatsapp.net') || !sock || !clientReady) return id;
+    
+    try {
+        const [result] = await sock.onWhatsApp(id);
+        if (result && result.exists) {
+            if (result.jid !== id) {
+                console.log(`[JID Correction] ${id} → ${result.jid}`);
+            }
+            return result.jid;
+        }
+    } catch (err) {
+        console.error('[Verify JID Error]', err);
+    }
+    return id;
+}
+
 // Enviar mensagem simples
 app.post('/send', authMiddleware, async (req, res) => {
     if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
@@ -195,8 +181,9 @@ app.post('/send', authMiddleware, async (req, res) => {
             cleanPhone = `${cleanPhone}@s.whatsapp.net`;
         }
 
-        const sent = await sock.sendMessage(cleanPhone, { text: message });
-        res.json({ success: true, messageId: sent.key.id });
+        const realJid = await getVerifiedJid(cleanPhone);
+        const sent = await sock.sendMessage(realJid, { text: message });
+        res.json({ success: true, messageId: sent.key.id, verifiedJid: realJid });
     } catch (err) {
         console.error('[send error]', err);
         res.status(500).json({ error: err.message });
@@ -211,8 +198,9 @@ app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
     const results = [];
     for (const id of groupIds) {
         try {
-            await sock.sendMessage(id, { text: message });
-            results.push({ id, success: true });
+            const realJid = await getVerifiedJid(id);
+            await sock.sendMessage(realJid, { text: message });
+            results.push({ id, verifiedJid: realJid, success: true });
             // Pequeno delay entre envios para evitar spam
             await new Promise(r => setTimeout(r, 1000));
         } catch (err) {
