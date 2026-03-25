@@ -12,6 +12,7 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
@@ -170,6 +171,27 @@ async function getVerifiedJid(id) {
     return id;
 }
 
+/**
+ * Função utilitária para buscar o buffer de uma imagem online
+ * Necessária para gerar a miniatura do Native Link Preview
+ */
+async function getThumbnailBuffer(url) {
+    return new Promise((resolve) => {
+        https.get(url, (res) => {
+            if (res.statusCode !== 200) {
+                console.warn(`[Thumb] Fallback (status ${res.statusCode})`);
+                return resolve(null);
+            }
+            const data = [];
+            res.on('data', chunk => data.push(chunk));
+            res.on('end', () => resolve(Buffer.concat(data)));
+        }).on('error', (err) => {
+            console.error('[Thumb error]', err.message);
+            resolve(null);
+        });
+    });
+}
+
 // Enviar mensagem simples
 app.post('/send', authMiddleware, async (req, res) => {
     if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
@@ -183,15 +205,29 @@ app.post('/send', authMiddleware, async (req, res) => {
 
         const realJid = await getVerifiedJid(cleanPhone);
         
-        // Se for link de entrega, envia como imagem + legenda para garantir a miniatura (preview)
-        const isDelivery = message.includes('delivery.owlfilms.pro');
-        const msgOptions = isDelivery ? {
-            image: { url: 'https://storage.googleapis.com/gpt-engineer-file-uploads/Djzpx4CivJSbk3MgCxPnLa8M8FE2/social-images/social-1773443024327-owl_web.webp' },
-            caption: message
-        } : { text: message };
+        // Pega o Link de Entrega da mensagem (se houver)
+        const urlMatch = message.match(/https?:\/\/\S+/);
+        const url = urlMatch ? urlMatch[0] : null;
 
-        const sent = await sock.sendMessage(realJid, msgOptions);
-        res.json({ success: true, messageId: sent.key.id, verifiedJid: realJid });
+        if (url && url.includes('delivery.owlfilms.pro')) {
+            const thumbUrl = 'https://storage.googleapis.com/gpt-engineer-file-uploads/Djzpx4CivJSbk3MgCxPnLa8M8FE2/social-images/social-1773443024327-owl_web.webp';
+            const thumbBuffer = await getThumbnailBuffer(thumbUrl);
+
+            const sent = await sock.sendMessage(realJid, {
+                text: message,
+                linkPreview: {
+                    "canonical-url": url,
+                    "matched-text": url,
+                    title: "SEU VÍDEO ESTÁ PRONTO! - OWL FILMS",
+                    description: "Disponível para Visualização e Download",
+                    jpegThumbnail: thumbBuffer
+                }
+            });
+            res.json({ success: true, messageId: sent.key.id, verifiedJid: realJid });
+        } else {
+            const sent = await sock.sendMessage(realJid, { text: message });
+            res.json({ success: true, messageId: sent.key.id, verifiedJid: realJid });
+        }
     } catch (err) {
         console.error('[send error]', err);
         res.status(500).json({ error: err.message });
@@ -208,13 +244,27 @@ app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
         try {
             const realJid = await getVerifiedJid(id);
             
-            const isDelivery = message.includes('delivery.owlfilms.pro');
-            const msgOptions = isDelivery ? {
-                image: { url: 'https://storage.googleapis.com/gpt-engineer-file-uploads/Djzpx4CivJSbk3MgCxPnLa8M8FE2/social-images/social-1773443024327-owl_web.webp' },
-                caption: message
-            } : { text: message };
+            const urlMatch = message.match(/https?:\/\/\S+/);
+            const url = urlMatch ? urlMatch[0] : null;
 
-            await sock.sendMessage(realJid, msgOptions);
+            if (url && url.includes('delivery.owlfilms.pro')) {
+                const thumbUrl = 'https://storage.googleapis.com/gpt-engineer-file-uploads/Djzpx4CivJSbk3MgCxPnLa8M8FE2/social-images/social-1773443024327-owl_web.webp';
+                const thumbBuffer = await getThumbnailBuffer(thumbUrl);
+
+                await sock.sendMessage(realJid, {
+                    text: message,
+                    linkPreview: {
+                        "canonical-url": url,
+                        "matched-text": url,
+                        title: "SEU VÍDEO ESTÁ PRONTO! - OWL FILMS",
+                        description: "Disponível para Visualização e Download",
+                        jpegThumbnail: thumbBuffer
+                    }
+                });
+            } else {
+                await sock.sendMessage(realJid, { text: message });
+            }
+
             results.push({ id, verifiedJid: realJid, success: true });
             // Pequeno delay entre envios para evitar spam
             await new Promise(r => setTimeout(r, 1000));
