@@ -182,7 +182,7 @@ app.post('/send', authMiddleware, async (req, res) => {
         }
 
         const realJid = await getVerifiedJid(cleanPhone);
-        const sent = await sock.sendMessage(realJid, { text: message });
+        const sent = await sock.sendMessage(realJid, { text: message }, { linkPreview: true });
         res.json({ success: true, messageId: sent.key.id, verifiedJid: realJid });
     } catch (err) {
         console.error('[send error]', err);
@@ -199,7 +199,7 @@ app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
     for (const id of groupIds) {
         try {
             const realJid = await getVerifiedJid(id);
-            await sock.sendMessage(realJid, { text: message });
+            await sock.sendMessage(realJid, { text: message }, { linkPreview: true });
             results.push({ id, verifiedJid: realJid, success: true });
             // Pequeno delay entre envios para evitar spam
             await new Promise(r => setTimeout(r, 1000));
