@@ -44,8 +44,8 @@ async function connectToWhatsApp() {
             keys: makeCacheableSignalKeyStore(state.keys, logger),
         },
         logger,
-        browser: Browsers.ubuntu('Chrome'), 
-        syncFullHistory: false, 
+        browser: Browsers.ubuntu('Chrome'), // Identifica como Chrome no Linux
+        syncFullHistory: false, // Economiza RAM e banda
         markOnlineOnConnect: true,
     });
 
@@ -93,6 +93,7 @@ function authMiddleware(req, res, next) {
 
 // ── Rotas ──
 
+// Status da conexão
 app.get('/status', authMiddleware, (req, res) => {
     res.json({
         connected: clientReady,
@@ -101,42 +102,35 @@ app.get('/status', authMiddleware, (req, res) => {
     });
 });
 
+// Listar grupos
 app.get('/groups', authMiddleware, async (req, res) => {
     if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
+    
     try {
+        console.log('[groups] Buscando grupos participando...');
         const groups = await sock.groupFetchAllParticipating();
         const list = Object.values(groups).map(g => ({
             id: g.id,
             name: g.subject,
             participants: g.participants?.length || 0
         }));
+        console.log(`[groups] ${list.length} grupos encontrados`);
         res.json(list);
     } catch (err) {
+        console.error('[groups error]', err);
         res.status(500).json({ error: 'Falha ao buscar grupos' });
     }
 });
 
-// Enviar mensagem simples (Versão corrigida com busca de ID real)
+// Enviar mensagem simples
 app.post('/send', authMiddleware, async (req, res) => {
     if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
     const { phone, message } = req.body;
     
     try {
         let cleanPhone = phone.replace(/[\s\-\+\(\)]/g, '');
-        
-        // Se não tiver o sufixo, vamos procurar o JID real no WhatsApp
         if (!cleanPhone.includes('@')) {
-            // Tenta encontrar o número (Baileys cuida do 9 e resolve o JID correto)
-            const results = await sock.onWhatsApp(cleanPhone);
-            
-            if (results && results.length > 0 && results[0].exists) {
-                cleanPhone = results[0].jid;
-                console.log(`[send] ID real encontrado: ${cleanPhone}`);
-            } else {
-                // Fallback caso não encontre (tenta o formato padrão)
-                cleanPhone = `${cleanPhone}@s.whatsapp.net`;
-                console.log(`[send] Número não pré-validado, tentando padrão: ${cleanPhone}`);
-            }
+            cleanPhone = `${cleanPhone}@s.whatsapp.net`;
         }
 
         const sent = await sock.sendMessage(cleanPhone, { text: message });
@@ -147,14 +141,17 @@ app.post('/send', authMiddleware, async (req, res) => {
     }
 });
 
+// Envio em massa para grupos
 app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
     if (!clientReady || !sock) return res.status(503).json({ error: 'WhatsApp não conectado' });
     const { groupIds, message } = req.body;
+
     const results = [];
     for (const id of groupIds) {
         try {
             await sock.sendMessage(id, { text: message });
             results.push({ id, success: true });
+            // Pequeno delay entre envios para evitar spam
             await new Promise(r => setTimeout(r, 1000));
         } catch (err) {
             results.push({ id, success: false, error: err.message });
@@ -163,10 +160,12 @@ app.post('/send-bulk-groups', authMiddleware, async (req, res) => {
     res.json({ success: true, results });
 });
 
+// Logout
 app.post('/logout', authMiddleware, async (req, res) => {
     try {
         if (sock) {
             await sock.logout();
+            // Limpa pasta de auth
             if (fs.existsSync(AUTH_PATH)) {
                 fs.rmSync(AUTH_PATH, { recursive: true, force: true });
             }
@@ -175,6 +174,7 @@ app.post('/logout', authMiddleware, async (req, res) => {
         connectionInfo = null;
         currentQR = null;
         res.json({ success: true });
+        // Reinicia para gerar novo QR
         setTimeout(() => connectToWhatsApp(), 2000);
     } catch (err) {
         res.status(500).json({ error: err.message });
