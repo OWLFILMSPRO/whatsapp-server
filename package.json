@@ -1,13 +1,17 @@
 {
-  "name": "whatsapp-server",
+  "name": "whatsapp-baileys-server",
   "version": "1.0.0",
+  "description": "WhatsApp Baileys server for group messaging automation",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "whatsapp-web.js": "^1.26.1-alpha.3",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0",
     "express": "^4.21.0",
     "cors": "^2.8.5",
-    "qrcode": "^1.5.4",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode": "^1.5.4"
   }
 }
